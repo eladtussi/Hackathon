@@ -20,7 +20,7 @@ SUITS = {0: '♥', 1: '♦', 2: '♣', 3: '♠'}
 
 # Offer Messages  pack_offer
 
-def pack_offer(server_port, server_name):
+def build_offer_packet(server_port, server_name):
     """
     Build a UDP offer packet sent by the server.
     Packet Structure:
@@ -32,7 +32,7 @@ def pack_offer(server_port, server_name):
     name_bytes = server_name.encode('utf-8')[:32].ljust(32, b'\0')
     return struct.pack('!IBH32s', MAGIC_COOKIE, MSG_TYPE_OFFER, server_port, name_bytes)
 
-def unpack_offer(data):
+def parse_offer_packet(data):
     """
     Parse a received UDP offer packet.
 
@@ -48,7 +48,7 @@ def unpack_offer(data):
     except:
         return None
 
-def pack_request(num_rounds, team_name):
+def build_request_packet(num_rounds, team_name):
     """
     Build a TCP request packet sent by the client.
     Packet Structure:
@@ -60,7 +60,7 @@ def pack_request(num_rounds, team_name):
     name_bytes = team_name.encode('utf-8')[:32].ljust(32, b'\0')
     return struct.pack('!IBB32s', MAGIC_COOKIE, MSG_TYPE_REQUEST, num_rounds, name_bytes)
 
-def unpack_request(data):
+def parse_request_packet(data):
     """
     Parse a TCP request packet from a client.
 
@@ -76,14 +76,14 @@ def unpack_request(data):
     except:
         return None
 
-def pack_payload_server(result, rank, suit):
+def build_server_payload(result, rank, suit):
     """
     Server Payload: Magic(4), Type(1), Result(1), Rank(2), Suit(1)
     Total: 9 bytes
     """
     return struct.pack('!IBBHB', MAGIC_COOKIE, MSG_TYPE_PAYLOAD, result, rank, suit)
 
-def unpack_payload_server(data):
+def parse_server_payload(data):
     """
     Build a payload packet sent by the server during the game.
     """
@@ -95,7 +95,7 @@ def unpack_payload_server(data):
     except:
         return None
 
-def pack_payload_client(decision):
+def build_client_payload(decision):
     """
     Parse a server payload packet.
     Returns:
@@ -105,7 +105,7 @@ def pack_payload_client(decision):
     decision_bytes = decision.encode('utf-8')[:5] 
     return struct.pack('!IB5s', MAGIC_COOKIE, MSG_TYPE_PAYLOAD, decision_bytes)
 
-def unpack_payload_client(data):
+def parse_client_payload(data):
     """
     Build a payload packet sent by the client.
     """

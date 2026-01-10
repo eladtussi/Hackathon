@@ -47,7 +47,7 @@ class BlackjackClient:
 
         while True:
             data, address = udp_socket.recvfrom(BUFFER_SIZE)
-            offer = protocol.unpack_offer(data)
+            offer = protocol.parse_offer_packet(data)
 
             if offer:
                 server_port, server_name = offer
@@ -63,7 +63,7 @@ class BlackjackClient:
 
         try:
             tcp_socket.connect((server_ip, server_port))
-            tcp_socket.sendall(protocol.pack_request(rounds, TEAM_NAME))
+            tcp_socket.sendall(protocol.build_request_packet(rounds, TEAM_NAME))
             self.run_game_loop(tcp_socket, rounds)
 
         except ConnectionResetError:
@@ -97,7 +97,7 @@ class BlackjackClient:
                     packet = data[offset:offset + 9]
                     offset += 9
 
-                    parsed_payload = protocol.unpack_payload_server(packet)
+                    parsed_payload = protocol.parse_server_payload(packet)
                     if not parsed_payload:
                         continue
 
@@ -185,16 +185,16 @@ class BlackjackClient:
         Prompt the user for Hit or Stand and send the decision to the server.
         """
         if current_sum == 21:
-            connection.sendall(protocol.pack_payload_client("Stand"))
+            connection.sendall(protocol.build_client_payload("Stand"))
             return 'stand'
 
         while True:
             move = input(f"Sum: {current_sum}. Hit or Stand? ").lower()
             if move in ['h', 'hit']:
-                connection.sendall(protocol.pack_payload_client("Hittt"))
+                connection.sendall(protocol.build_client_payload("Hittt"))
                 return 'hit'
             elif move in ['s', 'stand']:
-                connection.sendall(protocol.pack_payload_client("Stand"))
+                connection.sendall(protocol.build_client_payload("Stand"))
                 return 'stand'
 
     def format_card(self, rank, suit):

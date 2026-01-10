@@ -63,7 +63,7 @@ class BlackjackServer:
         Continuously broadcast UDP offer messages
         so clients can discover the server.
         """
-        offer_packet = protocol.pack_offer(self.tcp_port, SERVER_NAME)
+        offer_packet = protocol.build_offer_packet(self.tcp_port, SERVER_NAME)
 
         while True:
             try:
@@ -87,7 +87,7 @@ class BlackjackServer:
             connection.settimeout(60)
 
             request_data = connection.recv(1024)
-            request = protocol.unpack_request(request_data)
+            request = protocol.parse_request_packet(request_data)
 
             if not request:
                 print(f"[-] Invalid request from {client_address}")
@@ -132,7 +132,7 @@ class BlackjackServer:
         # -------- Player Turn --------
         while player_score < 21:
             try:
-                decision = protocol.unpack_payload_client(connection.recv(1024))
+                decision = protocol.parse_client_payload(connection.recv(1024))
 
                 if decision == "Hittt":
                     drawn_card = deck.pop()
@@ -194,7 +194,7 @@ class BlackjackServer:
         Send a card payload to the client using the protocol layer.
         """
         connection.sendall(
-            protocol.pack_payload_server(
+            protocol.build_server_payload(
                 result_code,
                 card[0],
                 card[1]
