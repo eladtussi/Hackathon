@@ -2,7 +2,7 @@ import socket
 import protocol
 import sys
 
-# ================= Configuration =================
+# Configuration Part
 TEAM_NAME = "Tussi's Team"
 BUFFER_SIZE = 1024
 RANK_NAMES = {1: 'Ace', 11: 'Jack', 12: 'Queen', 13: 'King'}
@@ -48,7 +48,7 @@ class BlackjackClient:
         while True:
             data, address = udp_socket.recvfrom(BUFFER_SIZE)
             offer = protocol.unpack_offer(data)
-            
+
             if offer:
                 server_port, server_name = offer
                 udp_socket.close()
@@ -80,7 +80,7 @@ class BlackjackClient:
         wins_count = 0
         rounds_completed = 0
 
-        # ---- State Variables ----
+        # State Variables 
         player_sum = 0
         ace_counter = 0
         cards_counter = 0
@@ -104,7 +104,7 @@ class BlackjackClient:
                     result_code, rank, suit = parsed_payload
                     card_display = self.format_card(rank, suit)
 
-                    # -------- End of Round --------
+                    # End of Round 
                     if result_code != protocol.RESULT_ACTIVE:
                         if rank != 0:
                             print(f"Drawn card: {card_display}")
@@ -137,7 +137,7 @@ class BlackjackClient:
                             )
                             return
 
-                    # -------- Active Round --------
+                    # Active Round 
                     else:
                         cards_counter += 1
 
