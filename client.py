@@ -1,210 +1,186 @@
 import socket
-import protocol
 import sys
+from protocol import GameProtocol
 
-# Configuration Part
-TEAM_NAME = "Tussi's Team"
-BUFFER_SIZE = 1024
-RANK_NAMES = {1: 'Ace', 11: 'Jack', 12: 'Queen', 13: 'King'}
+# --- Config ---
+TEAM = "Tussi's Team"  # Name from the PDF example
+BUF_SIZE = 2048
 
 
-class BlackjackClient:
-    """
-    Blackjack client.
-    - Listens for server offers via UDP
-    - Connects to server via TCP
-    - Manages user interaction and game state
-    """
+class BlackjackPlayer:
+    def __init__(self):
+        self.running = True
+        self.curr_hand_count = 0
+        self.dealer_visible_shown = False
+        self.my_turn = True
 
-    def run(self):
-        """
-        Main client loop.
-        Allows the user to repeatedly connect and play.
-        """
-        while True:
-            rounds_input = input("How many rounds do you want to play? ")
-            rounds = int(rounds_input) if rounds_input.isdigit() else 1
-
-            print("Client started, listening for offer requests...")
-
-            server_ip, server_port, server_name = self.wait_for_server_offer()
-            print(f"Received offer from {server_ip}")
-
-            self.connect_to_server(server_ip, server_port, rounds)
-
-    def wait_for_server_offer(self):
-        """
-        Listen for UDP offer messages from servers.
-        Returns server IP, port and name upon success.
-        """
-        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except Exception:
-            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        udp_socket.bind(("", protocol.UDP_PORT))
-
-        while True:
-            data, address = udp_socket.recvfrom(BUFFER_SIZE)
-            offer = protocol.parse_offer_packet(data)
-
-            if offer:
-                server_port, server_name = offer
-                udp_socket.close()
-                return address[0], server_port, server_name
-
-    def connect_to_server(self, server_ip, server_port, rounds):
-        """
-        Establish a TCP connection to the server and start the game.
-        """
-        print(f"Connecting to {server_ip}:{server_port}...")
-        tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        try:
-            tcp_socket.connect((server_ip, server_port))
-            tcp_socket.sendall(protocol.build_request_packet(rounds, TEAM_NAME))
-            self.run_game_loop(tcp_socket, rounds)
-
-        except ConnectionResetError:
-            print("Server disconnected (Connection Reset).")
-        except Exception as error:
-            print(f"Connection error: {error}")
-        finally:
-            tcp_socket.close()
-
-    def run_game_loop(self, connection, total_rounds):
-        """
-        Handle all game rounds and maintain game state.
-        """
-        wins_count = 0
-        rounds_completed = 0
-
-        # State Variables 
-        player_sum = 0
-        ace_counter = 0
-        cards_counter = 0
-        is_player_turn = True
-
-        while rounds_completed < total_rounds:
+    def launch(self):
+        while self.running:
             try:
-                data = connection.recv(BUFFER_SIZE)
-                if not data:
-                    break
+                rounds_input = input("How many rounds do you want to play? ")
+                if not rounds_input.isdigit():
+                    rounds = 1
+                else:
+                    rounds = int(rounds_input)
 
-                offset = 0
-                while offset + 9 <= len(data):
-                    packet = data[offset:offset + 9]
-                    offset += 9
+                print("Client started, listening for offer requests...")
 
-                    parsed_payload = protocol.parse_server_payload(packet)
-                    if not parsed_payload:
-                        continue
+                srv = self._find_server()
+                if not srv: continue
 
-                    result_code, rank, suit = parsed_payload
-                    card_display = self.format_card(rank, suit)
+                ip, port, name = srv
+                print(f"Received offer from {ip}")
 
-                    # End of Round 
-                    if result_code != protocol.RESULT_ACTIVE:
-                        if rank != 0:
-                            print(f"Drawn card: {card_display}")
+                self._run_session(ip, port, rounds)
 
-                        if result_code == protocol.RESULT_WIN:
-                            print("Round Result: WIN")
-                            wins_count += 1
-                        elif result_code == protocol.RESULT_TIE:
-                            print("Round Result: TIE")
-                            wins_count += 1
-                        else:
-                            print("Round Result: LOSS")
+            except KeyboardInterrupt:
+                self.running = False
 
-                        rounds_completed += 1
+    def _find_server(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-                        if rounds_completed < total_rounds:
-                            print("\n--- New Round ---\n")
+            s.bind(("", GameProtocol.PORT_DISCOVERY))
+            data, addr = s.recvfrom(BUF_SIZE)
 
-                        # Reset state for next round
-                        player_sum = 0
-                        ace_counter = 0
-                        cards_counter = 0
-                        is_player_turn = True
+            parsed = GameProtocol.parse_offer(data)
+            if parsed: return addr[0], parsed[0], parsed[1]
+            return None
 
-                        if rounds_completed == total_rounds:
-                            win_rate = wins_count / total_rounds if total_rounds > 0 else 0
-                            print(
-                                f"Finished playing {total_rounds} rounds, "
-                                f"win rate: {win_rate:.2f}"
-                            )
-                            return
+    def _run_session(self, ip, port, rounds):
+        print(f"Connecting to {ip}:{port}...")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((ip, port))
+                s.sendall(GameProtocol.create_request(rounds, TEAM))
+                self._game_loop(s, rounds)
+        except Exception as e:
+            print(f"Connection Error: {e}")
 
-                    # Active Round 
+    def _game_loop(self, sock, total_rounds):
+        rounds_done = 0
+        wins = 0
+        self._reset_round()
+
+        while rounds_done < total_rounds:
+            raw = self._recv_safe(sock, 9)
+            if not raw: break
+
+            parsed = GameProtocol.parse_server_payload(raw)
+            if not parsed: continue
+
+            res, rank, suit = parsed
+
+            # --- Event Handling ---
+
+            if res != GameProtocol.RES_ACTIVE:
+                # Round Ended
+                if rank != 0:
+                    # If server sent the busting card with the result
+                    print(f"Your card: {self._fmt(rank, suit)}")
+
+                if res == GameProtocol.RES_WIN:
+                    print("Round Result: WIN")
+                    wins += 1
+                elif res == GameProtocol.RES_TIE:
+                    print("Round Result: TIE")
+                    wins += 1  # Counting tie as win for rate calculation per some requirements
+                else:
+                    print("Round Result: LOSS")
+
+                rounds_done += 1
+                self._reset_round()
+
+                if rounds_done == total_rounds:
+                    rate = (wins / total_rounds) if total_rounds else 0
+                    print(f"Finished playing {total_rounds} rounds, win rate: {rate:.2f}")
+
+            else:
+                # Active Game (Card Received)
+                card_str = self._fmt(rank, suit)
+
+                if self.curr_hand_count < 2:
+                    # First two cards always mine
+                    print(f"Your card: {card_str}")
+                    self.curr_hand_count += 1
+                    self.current_score = self._update_score(rank)
+
+                elif not self.dealer_visible_shown:
+                    # 3rd card total -> Dealer's first visible
+                    print(f"Dealer's card: {card_str}")
+                    self.dealer_visible_shown = True
+                    self._make_move(sock)
+
+                elif self.my_turn:
+                    # If it's my turn, any card I get is mine (Hit result)
+                    print(f"Your card: {card_str}")
+                    self.current_score = self._update_score(rank)
+                    if self.current_score > 21:
+                        # Will receive LOSS packet next loop
+                        pass
                     else:
-                        cards_counter += 1
+                        self._make_move(sock)
+                else:
+                    # Not my turn -> Dealer drawing
+                    print(f"Dealer draws: {card_str}")
 
-                        card_value = 0
-                        if rank == 1:  # Ace
-                            card_value = 11
-                            if cards_counter <= 2 or (cards_counter > 3 and is_player_turn):
-                                ace_counter += 1
-                        elif rank >= 10:
-                            card_value = 10
-                        else:
-                            card_value = rank
-
-                        if cards_counter <= 2 or (cards_counter > 3 and is_player_turn):
-                            player_sum += card_value
-                            while player_sum > 21 and ace_counter > 0:
-                                player_sum -= 10
-                                ace_counter -= 1
-
-                        if cards_counter <= 2:
-                            print(f"Your card: {card_display}")
-
-                        elif cards_counter == 3:
-                            print(f"Dealer's card: {card_display}")
-                            action = self.get_player_action(connection, player_sum)
-                            if action == 'stand':
-                                is_player_turn = False
-
-                        else:
-                            if is_player_turn:
-                                print(f"Your card: {card_display}")
-
-                                if player_sum <= 21:
-                                    action = self.get_player_action(connection, player_sum)
-                                    if action == 'stand':
-                                        is_player_turn = False
-                            else:
-                                print(f"Dealer draws: {card_display}")
-
-            except OSError:
-                break
-
-    def get_player_action(self, connection, current_sum):
-        """
-        Prompt the user for Hit or Stand and send the decision to the server.
-        """
-        if current_sum == 21:
-            connection.sendall(protocol.build_client_payload("Stand"))
-            return 'stand'
+    def _make_move(self, sock):
+        if self.current_score == 21:
+            sock.sendall(GameProtocol.create_client_payload("Stand"))
+            self.my_turn = False
+            return
 
         while True:
-            move = input(f"Sum: {current_sum}. Hit or Stand? ").lower()
-            if move in ['h', 'hit']:
-                connection.sendall(protocol.build_client_payload("Hittt"))
-                return 'hit'
-            elif move in ['s', 'stand']:
-                connection.sendall(protocol.build_client_payload("Stand"))
-                return 'stand'
+            c = input(f"Sum: {self.current_score}. Hit or Stand? ").lower()
+            if c in ['h', 'hit']:
+                sock.sendall(GameProtocol.create_client_payload("Hittt"))
+                return
+            if c in ['s', 'stand']:
+                sock.sendall(GameProtocol.create_client_payload("Stand"))
+                self.my_turn = False
+                return
 
-    def format_card(self, rank, suit):
-        """
-        Convert rank and suit to a human-readable string.
-        """
-        rank_str = RANK_NAMES.get(rank, str(rank))
-        suit_str = protocol.SUITS.get(suit, '?')
-        return f"{rank_str}{suit_str}"
+    def _recv_safe(self, sock, n):
+        buf = b''
+        while len(buf) < n:
+            try:
+                chunk = sock.recv(n - len(buf))
+                if not chunk: return None
+                buf += chunk
+            except:
+                return None
+        return buf
+
+    def _reset_round(self):
+        self.curr_hand_count = 0
+        self.dealer_visible_shown = False
+        self.my_turn = True
+        self.current_score = 0
+        self.aces = 0
+
+    def _update_score(self, rank):
+        val = 11 if rank == 1 else (10 if rank >= 10 else rank)
+        if rank == 1: self.aces += 1
+
+        score = self.current_score + val
+        temp_aces = self.aces
+
+        while score > 21 and temp_aces > 0:
+            score -= 10
+            temp_aces -= 1
+
+        # We don't save the reduced score permanently because new aces might arrive
+        # but for simple logic tracking, this suffices as we track aces count
+        return score
+
+    def _fmt(self, r, s):
+        r_n = GameProtocol.RANKS_MAP.get(r, str(r))
+        s_n = GameProtocol.SUITS_MAP.get(s, '?')
+        return f"{r_n}{s_n}"
 
 
 if __name__ == "__main__":
-    BlackjackClient().run()
+    BlackjackPlayer().launch()

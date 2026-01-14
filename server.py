@@ -2,227 +2,201 @@ import socket
 import threading
 import time
 import random
-import protocol
+import traceback
+from protocol import GameProtocol
 
-# Configuration Part
-SERVER_NAME = "Nadav's Casino"
-SERVER_BIND_IP = "0.0.0.0"          # Bind to all interfaces
-BROADCAST_IP = "255.255.255.255"    # UDP broadcast address
+# --- Config ---
+SERVER_ALIAS = "Cohen's Casino" # Name broadcasted to clients
+IFACE = "0.0.0.0" # Listen on all network interfaces
+BCAST_ADDR = "255.255.255.255" # UDP broadcast address
+DELAY = 0.6   # Delay between card sends 
 
 
-class BlackjackServer:
-    """
-    Blackjack game server.
-    Handles:
-    - UDP broadcast offers
-    - TCP client connections
-    - Blackjack game logic per client
-    """
+class DeckManager:
+    def __init__(self):
+        """Manages a shuffled deck of 52 playing cards."""
+        self._cards = []
+        self._refill()
+
+    def _refill(self):
+        """Create and shuffle a full 52-card deck."""
+        self._cards = [(rank, suit) for suit in range(4) for rank in range(1, 14)]
+        random.shuffle(self._cards)
+
+    def pop_card(self):
+        if not self._cards: self._refill()
+        return self._cards.pop()
+
+
+class CasinoServer:
+    # Blackjack casino server handling TCP gameplay and UDP discovery.
 
     def __init__(self):
-        """Initialize TCP and UDP sockets."""
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_socket.bind((SERVER_BIND_IP, 0))  # Ephemeral port
-        self.tcp_port = self.tcp_socket.getsockname()[1]
-        self.tcp_socket.listen(5)
+        self.active = True
+        self.tcp_port = self._init_sockets()
+        print(f"Server started on port {self.tcp_port}")
 
-        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    def _init_sockets(self):
+        # Create TCP socket for gameplay and UDP socket for broadcast
 
-        print("=== Server Started ===")
-        print(f"IP: {socket.gethostbyname(socket.gethostname())}")
-        print(f"Listening on TCP Port: {self.tcp_port}")
+        self.sock_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock_tcp.bind((IFACE, 0))
+        self.sock_tcp.listen(10)
 
-    def run(self):
-        """
-        Start the server:
-        - Launch UDP broadcast thread
-        - Accept and handle TCP client connections
-        """
-        threading.Thread(
-            target=self.broadcast_offers_loop,
-            daemon=True
-        ).start()
+        self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
+        return self.sock_tcp.getsockname()[1]
+
+    def start_service(self):
+        #Start UDP advertising and accept incoming TCP clients.
+        threading.Thread(target=self._advertise, daemon=True).start()
+        print("Waiting for players...")
         try:
-            while True:
-                client_socket, client_address = self.tcp_socket.accept()
-                print(f"[+] Connection accepted from: {client_address}")
+            while self.active:
+                conn, addr = self.sock_tcp.accept()
+                t = threading.Thread(target=self._handle_player, args=(conn,))
+                t.daemon = True
+                t.start()
+        except Exception as e:
+            print(f"Main loop error: {e}")
 
-                threading.Thread(
-                    target=self.handle_client_session,
-                    args=(client_socket,),
-                    daemon=True
-                ).start()
-
-        except Exception as error:
-            print(f"Server Error: {error}")
-
-    def broadcast_offers_loop(self):
-        """
-        Continuously broadcast UDP offer messages
-        so clients can discover the server.
-        """
-        offer_packet = protocol.build_offer_packet(self.tcp_port, SERVER_NAME)
-
-        while True:
+    def _advertise(self):
+        #Broadcast server offer packets periodically via UDP.
+        packet = GameProtocol.create_offer(self.tcp_port, SERVER_ALIAS)
+        while self.active:
             try:
-                self.udp_socket.sendto(
-                    offer_packet,
-                    (BROADCAST_IP, protocol.UDP_PORT)
-                )
+                self.sock_udp.sendto(packet, (BCAST_ADDR, GameProtocol.PORT_DISCOVERY))
                 time.sleep(1)
-            except Exception:
+            except:
                 pass
 
-    def handle_client_session(self, connection):
-        """
-        Handle a single client connection:
-        - Receive game request
-        - Run requested number of rounds
-        """
-        client_address = connection.getpeername()
-
+    def _handle_player(self, conn):
+        #Handle a single connected client and play requested rounds.
         try:
-            connection.settimeout(60)
+            conn.settimeout(60)
 
-            request_data = connection.recv(1024)
-            request = protocol.parse_request_packet(request_data)
+            raw_req = self._recv_exact(conn, 38)
+            if not raw_req: return
 
-            if not request:
-                print(f"[-] Invalid request from {client_address}")
-                return
+            parsed = GameProtocol.parse_request(raw_req)
+            if not parsed: return
 
-            rounds_requested, team_name = request
-            print(f"[!] Team '{team_name}' started {rounds_requested} rounds.")
+            rounds_num, team_name = parsed
+            print(f"Team '{team_name}' connected for {rounds_num} rounds.")
 
-            for _ in range(rounds_requested):
-                self.run_single_round(connection)
+            for i in range(rounds_num):
+                self._play_round(conn)
+                print(f"Round {i + 1} finished for {team_name}")
 
-            print(f"[V] Finished serving {team_name}.")
+            # Wait a bit before closing to ensure client got everything
+            time.sleep(1)
 
-        except socket.timeout:
-            print(f"[-] Timeout: {client_address} inactive.")
-        except Exception as error:
-            print(f"[-] Error with {client_address}: {error}")
+        except Exception as e:
+            print(f"Error with client: {e}")
+            traceback.print_exc()
         finally:
-            connection.close()
+            conn.close()
 
-    def run_single_round(self, connection):
-        """
-        Execute a single round of simplified Blackjack.
-        """
-        deck = [(rank, suit) for rank in range(1, 14) for suit in range(4)]
-        random.shuffle(deck)
+    def _play_round(self, conn):
+        #Execute a single Blackjack round.
+        try:
+            deck = DeckManager()
 
-        player_hand = [deck.pop(), deck.pop()]
-        dealer_hand = [deck.pop(), deck.pop()]
+            # Initial Hands
+            p_cards = [deck.pop_card(), deck.pop_card()]
+            d_cards = [deck.pop_card(), deck.pop_card()]
 
-        # ---- Initial deal ----
-        self.send_card_payload(connection, protocol.RESULT_ACTIVE, player_hand[0])
-        time.sleep(0.05)
-        self.send_card_payload(connection, protocol.RESULT_ACTIVE, player_hand[1])
-        time.sleep(0.05)
+            # Deal Initial Cards
+            self._send_status(conn, GameProtocol.RES_ACTIVE, p_cards[0])
+            time.sleep(DELAY)
+            self._send_status(conn, GameProtocol.RES_ACTIVE, p_cards[1])
+            time.sleep(DELAY)
+            self._send_status(conn, GameProtocol.RES_ACTIVE, d_cards[0])
+            time.sleep(DELAY)
 
-        # Dealer visible card
-        self.send_card_payload(connection, protocol.RESULT_ACTIVE, dealer_hand[0])
+            # --- Player Turn ---
+            p_val = self._calc_value(p_cards)
+            player_busted = False
 
-        player_score = self.compute_hand_score(player_hand)
+            while p_val < 21:
+                raw_cmd = self._recv_exact(conn, 10)
+                if not raw_cmd: raise ConnectionResetError("Client disconnected during turn")
 
-        # -------- Player Turn --------
-        while player_score < 21:
-            try:
-                decision = protocol.parse_client_payload(connection.recv(1024))
+                cmd = GameProtocol.parse_client_payload(raw_cmd)
 
-                if decision == "Hittt":
-                    drawn_card = deck.pop()
-                    player_hand.append(drawn_card)
-                    player_score = self.compute_hand_score(player_hand)
+                if cmd == "Hittt":
+                    new_card = deck.pop_card()
+                    p_cards.append(new_card)
+                    p_val = self._calc_value(p_cards)
 
-                    if player_score > 21:
-                        self.send_card_payload(
-                            connection,
-                            protocol.RESULT_LOSS,
-                            drawn_card
-                        )
-                        return
-                    else:
-                        self.send_card_payload(
-                            connection,
-                            protocol.RESULT_ACTIVE,
-                            drawn_card
-                        )
+                    status = GameProtocol.RES_LOSS if p_val > 21 else GameProtocol.RES_ACTIVE
+                    self._send_status(conn, status, new_card)
+
+                    if p_val > 21:
+                        player_busted = True
+                        return  # Round over (Player lost)
                 else:
-                    break
-            except Exception:
-                return
+                    break  # Stand
 
-        # -------- Dealer Turn --------
-        self.send_card_payload(connection, protocol.RESULT_ACTIVE, dealer_hand[1])
-        time.sleep(0.5)
+            # --- Dealer Turn ---
+            if not player_busted:
+                # Reveal hidden card
+                self._send_status(conn, GameProtocol.RES_ACTIVE, d_cards[1])
+                time.sleep(DELAY)
 
-        dealer_score = self.compute_hand_score(dealer_hand)
+                d_val = self._calc_value(d_cards)
 
-        while dealer_score < 17:
-            drawn_card = deck.pop()
-            dealer_hand.append(drawn_card)
-            dealer_score = self.compute_hand_score(dealer_hand)
+                # Hit until 17
+                while d_val < 17:
+                    new_card = deck.pop_card()
+                    d_cards.append(new_card)
+                    d_val = self._calc_value(d_cards)
 
-            self.send_card_payload(
-                connection,
-                protocol.RESULT_ACTIVE,
-                drawn_card
-            )
-            time.sleep(0.5)
+                    self._send_status(conn, GameProtocol.RES_ACTIVE, new_card)
+                    time.sleep(DELAY)
 
-        # -------- Determine Result --------
-        if player_score > 21:
-            round_result = protocol.RESULT_LOSS
-        elif dealer_score > 21:
-            round_result = protocol.RESULT_WIN
-        elif player_score > dealer_score:
-            round_result = protocol.RESULT_WIN
-        elif dealer_score > player_score:
-            round_result = protocol.RESULT_LOSS
-        else:
-            round_result = protocol.RESULT_TIE
+                # Determine Winner
+                res = self._get_winner(p_val, d_val)
+                self._send_status(conn, res, (0, 0))
 
-        self.send_card_payload(connection, round_result, (0, 0))
+        except Exception as e:
+            print(f"Round Logic Error: {e}")
+            raise e  # Rethrow so connection closes
 
-    def send_card_payload(self, connection, result_code, card):
-        """
-        Send a card payload to the client using the protocol layer.
-        """
-        connection.sendall(
-            protocol.build_server_payload(
-                result_code,
-                card[0],
-                card[1]
-            )
-        )
+    def _recv_exact(self, conn, n):
+        #Receive exactly n bytes from a TCP socket.
+        buf = b''
+        while len(buf) < n:
+            try:
+                chunk = conn.recv(n - len(buf))
+                if not chunk: return None
+                buf += chunk
+            except:
+                return None
+        return buf
 
-    def compute_hand_score(self, cards):
-        """
-        Compute blackjack hand score with Ace adjustment.
-        """
-        total_value = 0
-        ace_count = 0
+    def _send_status(self, conn, res, card):
+        #Send a server payload message to the client.
+        pkt = GameProtocol.create_server_payload(res, card[0], card[1])
+        conn.sendall(pkt)
 
-        for rank, _ in cards:
-            if rank == 1:
-                ace_count += 1
-                total_value += 11
-            elif rank >= 10:
-                total_value += 10
-            else:
-                total_value += rank
+    def _calc_value(self, hand):
+        #Calculate Blackjack hand value with Ace handling.
+        val = sum([10 if c[0] >= 10 else c[0] for c in hand])
+        aces = sum([1 for c in hand if c[0] == 1])
+        for _ in range(aces):
+            if val + 10 <= 21: val += 10
+        return val
 
-        while total_value > 21 and ace_count > 0:
-            total_value -= 10
-            ace_count -= 1
-
-        return total_value
+    def _get_winner(self, p, d):
+        #Determine round outcome based on player and dealer values.
+        if p > 21: return GameProtocol.RES_LOSS
+        if d > 21: return GameProtocol.RES_WIN
+        if p > d: return GameProtocol.RES_WIN
+        if d > p: return GameProtocol.RES_LOSS
+        return GameProtocol.RES_TIE
 
 
 if __name__ == "__main__":
-    BlackjackServer().run()
+    CasinoServer().start_service()
