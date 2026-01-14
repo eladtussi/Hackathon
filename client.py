@@ -3,18 +3,24 @@ import sys
 from protocol import GameProtocol
 
 # --- Config ---
-TEAM = "Tussi's Team"  # Name from the PDF example
-BUF_SIZE = 2048
+TEAM = "Tussi's Team"  # Team name sent to the server
+BUF_SIZE = 2048  # UDP receive buffer size
 
 
 class BlackjackPlayer:
+    """
+    Blackjack client that discovers servers via UDP
+    and plays the game over TCP.
+    """
     def __init__(self):
+        #Initialize client state and round tracking variables.
         self.running = True
         self.curr_hand_count = 0
         self.dealer_visible_shown = False
         self.my_turn = True
 
     def launch(self):
+        #Main client loop: find server, connect, and play rounds.
         while self.running:
             try:
                 rounds_input = input("How many rounds do you want to play? ")
@@ -37,6 +43,7 @@ class BlackjackPlayer:
                 self.running = False
 
     def _find_server(self):
+        #Listen for UDP broadcast offers and return server details.
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             try:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -51,6 +58,7 @@ class BlackjackPlayer:
             return None
 
     def _run_session(self, ip, port, rounds):
+        #Connect to the server via TCP and start the game session.
         print(f"Connecting to {ip}:{port}...")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -61,6 +69,7 @@ class BlackjackPlayer:
             print(f"Connection Error: {e}")
 
     def _game_loop(self, sock, total_rounds):
+        #Main game loop handling incoming server messages.
         rounds_done = 0
         wins = 0
         self._reset_round()
@@ -124,10 +133,10 @@ class BlackjackPlayer:
                     else:
                         self._make_move(sock)
                 else:
-                    # Not my turn -> Dealer drawing
                     print(f"Dealer draws: {card_str}")
 
     def _make_move(self, sock):
+        #Ask the player for Hit or Stand and send the command.
         if self.current_score == 21:
             sock.sendall(GameProtocol.create_client_payload("Stand"))
             self.my_turn = False
@@ -144,6 +153,7 @@ class BlackjackPlayer:
                 return
 
     def _recv_safe(self, sock, n):
+        #Receive exactly n bytes from the TCP socket
         buf = b''
         while len(buf) < n:
             try:
@@ -155,6 +165,7 @@ class BlackjackPlayer:
         return buf
 
     def _reset_round(self):
+        #Reset all round-related state variables.
         self.curr_hand_count = 0
         self.dealer_visible_shown = False
         self.my_turn = True
@@ -162,6 +173,7 @@ class BlackjackPlayer:
         self.aces = 0
 
     def _update_score(self, rank):
+        #Update and return the current hand score with Ace handling.
         val = 11 if rank == 1 else (10 if rank >= 10 else rank)
         if rank == 1: self.aces += 1
 
@@ -171,9 +183,6 @@ class BlackjackPlayer:
         while score > 21 and temp_aces > 0:
             score -= 10
             temp_aces -= 1
-
-        # We don't save the reduced score permanently because new aces might arrive
-        # but for simple logic tracking, this suffices as we track aces count
         return score
 
     def _fmt(self, r, s):
